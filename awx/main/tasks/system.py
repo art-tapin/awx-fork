@@ -53,7 +53,7 @@ from awx.main.analytics.subsystem_metrics import DispatcherMetrics
 from awx.main.constants import ACTIVE_STATES, ERROR_STATES
 from awx.main.consumers import emit_channel_notification
 from awx.main.dispatch import get_task_queuename, reaper
-from awx.main.dispatch.publish import task as task_awx
+from awx.main.dispatch.publish import task as task_awx, serialize_task, ALTERNATIVE_TASK_IMPLEMENTATIONS
 from awx.main.models import (
     Instance,
     InstanceGroup,
