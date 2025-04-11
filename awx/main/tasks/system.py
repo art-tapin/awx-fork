@@ -1019,19 +1019,57 @@ def awx_periodic_scheduler():
             emit_channel_notification('schedules-changed', dict(id=schedule.id, group_name="schedules"))
 
 
-@task(queue=get_task_queuename)
-def handle_failure_notifications(task_ids):
-    """A task-ified version of the method that sends notifications."""
+def _run_handle_failure_notifications(task_ids):
+    """Common implementation for sending failure notifications for tasks."""
     found_task_ids = set()
     for instance in UnifiedJob.objects.filter(id__in=task_ids):
         found_task_ids.add(instance.id)
         try:
-            instance.send_notification_templates('failed')
+            instance.send_notification_templates("failed")
         except Exception:
-            logger.exception(f'Error preparing notifications for task {instance.id}')
+            logger.exception(f"Error preparing notifications for task {instance.id}")
     deleted_tasks = set(task_ids) - found_task_ids
     if deleted_tasks:
-        logger.warning(f'Could not send notifications for {deleted_tasks} because they were not found in the database')
+        logger.warning(f"Could not send notifications for {deleted_tasks} because they were not found in the database")
+
+
+@task_awx(queue=get_task_queuename)
+def handle_failure_notifications(task_ids):
+    """
+    Legacy implementation to send failure notifications.
+    """
+    return _run_handle_failure_notifications(task_ids)
+
+
+@task(queue=get_task_queuename, bind=True)
+def adispatch_handle_failure_notifications(binder, *args, **kwargs):
+    """
+    Dispatcherd implementation for handling failure notifications.
+    Accepts binder and additional arguments; if no parameters are provided,
+    it attempts to extract the expected 'task_ids' from binder.message.
+    """
+    if not args and not kwargs:
+        msg = getattr(binder, "message", None)
+        if not isinstance(msg, dict):
+            logger.error(f"Binder message is not a valid dict: {msg}")
+            return
+        task_ids = msg.get("task_ids")
+        if not isinstance(task_ids, list):
+            logger.error(f"Expected 'task_ids' as a list in binder.message; got: {task_ids}")
+            return  # Skip processing if parameters are invalid.
+        logger.debug(f"Dispatcherd mode: extracted task_ids from binder.message: {task_ids}")
+        return _run_handle_failure_notifications(task_ids)
+    else:
+        logger.debug(f"Dispatcherd mode: processing handle_failure_notifications with args: {args}, kwargs: {kwargs}")
+        return _run_handle_failure_notifications(*args, **kwargs)
+
+
+try:
+    task_name = serialize_task(handle_failure_notifications)
+    ALTERNATIVE_TASK_IMPLEMENTATIONS[task_name] = adispatch_handle_failure_notifications
+    logger.info(f"Successfully registered dispatcherd method for {task_name}")
+except Exception:
+    logger.exception("Failed to register dispatcherd method for handle_failure_notifications")
 
 
 @task(queue=get_task_queuename)
