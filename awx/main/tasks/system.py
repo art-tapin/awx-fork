@@ -383,8 +383,7 @@ def profile_sql(threshold=1, minutes=1):
         logger.error('SQL QUERIES >={}s ENABLED FOR {} MINUTE(S)'.format(threshold, minutes))
 
 
-@task(queue=get_task_queuename)
-def send_notifications(notification_list, job_id=None):
+def _run_send_notifications(notification_list, job_id=None):
     if not isinstance(notification_list, list):
         raise TypeError("notification_list should be of type list")
     if job_id is not None:
@@ -403,7 +402,7 @@ def send_notifications(notification_list, job_id=None):
             if job_id is not None:
                 job_actual.log_lifecycle("notifications_sent")
         except Exception as e:
-            logger.exception("Send Notification Failed {}".format(e))
+            logger.exception(f"Send Notification Failed {e}")
             notification.status = "failed"
             notification.error = smart_str(e)
             update_fields.append('error')
@@ -411,7 +410,50 @@ def send_notifications(notification_list, job_id=None):
             try:
                 notification.save(update_fields=update_fields)
             except Exception:
-                logger.exception('Error saving notification {} result.'.format(notification.id))
+                logger.exception(f"Error saving notification {notification.id} result.")
+
+
+@task_awx(queue=get_task_queuename)
+def send_notifications(notification_list, job_id=None):
+    """
+    Legacy implementation to send notifications.
+    """
+    return _run_send_notifications(notification_list, job_id)
+
+
+@task(queue=get_task_queuename, bind=True)
+def adispatch_send_notifications(binder, *args, **kwargs):
+    """
+    Dispatcherd implementation for sending notifications.
+    Accepts binder and additional arguments.
+    If no positional or keyword args are provided, it attempts to extract the expected
+    'notification_list' and 'job_id' from binder.message.
+    """
+    if not args and not kwargs:
+        # Ensure binder.message is a dict
+        msg = getattr(binder, "message", None)
+        if not isinstance(msg, dict):
+            logger.error(f"Binder message is not a valid dict: {msg}")
+            return
+        notification_list = msg.get("notification_list")
+        job_id = msg.get("job_id")
+        if not isinstance(notification_list, list):
+            logger.error(f"Expected 'notification_list' as a list in binder.message; got: {notification_list}")
+            return  # Skip processing if parameters are invalid.
+        logger.debug(f"Dispatcherd mode: extracted parameters from binder.message: notification_list={notification_list}, job_id={job_id}")
+        return _run_send_notifications(notification_list, job_id)
+    else:
+        logger.debug(f"Dispatcherd mode: processing send_notifications with args: {args}, kwargs: {kwargs}")
+        return _run_send_notifications(*args, **kwargs)
+
+
+# Register the alternative implementation
+try:
+    task_name = serialize_task(send_notifications)
+    ALTERNATIVE_TASK_IMPLEMENTATIONS[task_name] = adispatch_send_notifications
+    logger.info(f"Successfully registered dispatcherd method for {task_name}")
+except Exception:
+    logger.exception("Failed to register dispatcherd method for send_notifications")
 
 
 def events_processed_hook(unified_job):
